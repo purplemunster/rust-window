@@ -52,6 +52,14 @@ impl WindowWrapper
 
         let mut last_time = std::time::SystemTime::now();
 
+        // default library
+        let raster_pipeline = PipelineBuilder::new()
+            .from_shader_lib("src/shaders.metal")
+            .with_vertex_function("triangle_vertex")
+            .with_fragment_function("triangle_fragment");
+
+        renderer.create_raster_pipeline(&raster_pipeline);
+
         // Moving closure, takes ownership of all variables that it uses.
         let event_handler = move | event: Event<'_,()>, _ : &EventLoopWindowTarget<()>, control_flow : &mut ControlFlow |
         {

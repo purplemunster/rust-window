@@ -44,4 +44,59 @@ impl RenderContext
     pub fn resize(&self, size: [u32; 2]) {
         self.swapchain.set_drawable_size(CGSize::new(size[0] as f64, size[1] as f64));
     }
+
+    pub fn create_raster_pipeline(&self, builder: &PipelineBuilder) -> metal::RenderPipelineState {
+
+        let descriptor = builder.build(&self.device);
+        self.device.new_render_pipeline_state(&descriptor).expect("Failed to create pipeline state")
+    }
+}
+
+pub struct PipelineBuilder
+{
+    shader_lib: String,
+    vertex_shader: String,
+    fragment_shader: String
+}
+
+impl PipelineBuilder
+{
+    pub fn new() -> Self {
+        PipelineBuilder {
+            shader_lib: "".to_string(),
+            vertex_shader: "".to_string(),
+            fragment_shader: "".to_string(),
+        }
+    }
+
+    pub fn from_shader_lib(mut self, path: &str) -> Self {
+        self.shader_lib = path.to_string();
+        self
+    }
+
+    pub fn with_vertex_function(mut self, function: &str) -> Self {
+        self.vertex_shader = function.to_string();
+        self
+    }
+
+    pub fn with_fragment_function(mut self, function: &str) -> Self {
+        self.fragment_shader = function.to_string();
+        self
+    }
+
+    pub fn build(&self, device: &Device) -> RenderPipelineDescriptor {
+
+        let options = metal::CompileOptions::new();
+        let shader_source = std::fs::read_to_string(self.shader_lib.clone()).expect("Failed to read shader file");
+
+        let shader_lib = device.new_library_with_source(&shader_source, &options).expect("Failed to compile shader source");
+        let vertex_shader = shader_lib.get_function(&self.vertex_shader, None).expect("Failed to create vertex shader");
+        let pixel_shader = shader_lib.get_function(&self.fragment_shader, None).expect("Failed to create pixel shader");
+
+        let pipeline_state_descriptor = RenderPipelineDescriptor::new();
+        pipeline_state_descriptor.set_vertex_function(Some(&vertex_shader));
+        pipeline_state_descriptor.set_fragment_function(Some(&pixel_shader));
+
+        pipeline_state_descriptor
+    }
 }
