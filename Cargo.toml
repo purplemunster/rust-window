@@ -10,3 +10,6 @@ winit = "*"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "*"
+metal = "*"
+core-graphics-types = "*"
+cocoa = "*"

@@ -7,10 +7,15 @@ use winit::platform::run_return::EventLoopExtRunReturn;
 #[cfg(target_os = "macos")]
 use objc::rc::autoreleasepool;
 
+#[cfg(target_os = "macos")]
+pub mod mtl;
+pub use mtl::*;
+
 pub struct WindowWrapper
 {
-    window : winit::window::Window,
-    event_loop : winit::event_loop::EventLoop<()>
+    window: winit::window::Window,
+    event_loop: winit::event_loop::EventLoop<()>,
+    renderer: RenderContext
 }
 
 impl WindowWrapper
@@ -22,13 +27,16 @@ impl WindowWrapper
         let display_size = winit::dpi::PhysicalSize::new(dims[0], dims[1]);
 
         let window = WindowBuilder::new()
-        .with_inner_size(display_size)
-        .with_title(title)
-        .build(&event_loop).expect("Failed to create window");
+            .with_inner_size(display_size)
+            .with_title(title)
+            .build(&event_loop).expect("Failed to create window");
+
+        let renderer =  RenderContext::new(&window, dims);
 
         WindowWrapper {
             window: window,
-            event_loop: event_loop
+            event_loop: event_loop,
+            renderer: renderer
         }
 
     }
@@ -38,7 +46,8 @@ impl WindowWrapper
         #[allow(unused_variables, unused_mut)]
         let WindowWrapper {
             mut window,
-            mut event_loop
+            mut event_loop,
+            mut renderer,
         } = self;
 
         let mut last_time = std::time::SystemTime::now();
@@ -58,7 +67,8 @@ impl WindowWrapper
                             *control_flow = ControlFlow::Exit
                         },
 
-                        WindowEvent::Resized(_size) => {
+                        WindowEvent::Resized(size) => {
+                            renderer.resize([size.width, size.height]);
                         },
 
                         // Handle keyboard events
