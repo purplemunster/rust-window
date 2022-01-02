@@ -7,6 +7,9 @@ edition = "2021"
 
 [dependencies]
 winit = "*"
+dolly = "*"
+directx_math = "*"
+glam = "*"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "*"

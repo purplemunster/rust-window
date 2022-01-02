@@ -6,11 +6,32 @@ use cocoa::{ appkit::NSView };
 use winit::window::Window;
 use winit::platform::macos::WindowExtMacOS;
 
+pub struct SwapChain
+{
+    raw: metal::MetalLayer,
+}
+
+impl SwapChain
+{
+    pub fn resize(&self, size: [u32; 2]) {
+        self.raw.set_drawable_size(CGSize::new(size[0] as f64, size[1] as f64));
+    }
+
+    pub fn next_drawable(&self) -> &metal::TextureRef {
+        self.raw.next_drawable().expect("Failed to acquire drawable").texture()
+    }
+
+    pub fn present(&self, cmd_buffer: &metal::CommandBufferRef) {
+        cmd_buffer.present_drawable(self.raw.next_drawable().expect("Failed to acquire drawable"))
+    }
+}
+
 pub struct RenderContext
 {
     device: metal::Device,
     queue: metal::CommandQueue,
-    swapchain: metal::MetalLayer
+    swapchain: SwapChain,
+    display_size: [u32; 2]
 }
 
 impl RenderContext
@@ -37,12 +58,14 @@ impl RenderContext
         RenderContext {
             device: device,
             queue: queue,
-            swapchain: layer
+            swapchain: SwapChain { raw: layer },
+            display_size: display_size
         }
     }
 
-    pub fn resize(&self, size: [u32; 2]) {
-        self.swapchain.set_drawable_size(CGSize::new(size[0] as f64, size[1] as f64));
+    pub fn resize(&mut self, size: [u32; 2]) {
+        self.display_size = size;
+        self.swapchain.resize(size);
     }
 
     pub fn create_raster_pipeline(&self, builder: &PipelineBuilder) -> metal::RenderPipelineState {
@@ -50,13 +73,36 @@ impl RenderContext
         let descriptor = builder.build(&self.device);
         self.device.new_render_pipeline_state(&descriptor).expect("Failed to create pipeline state")
     }
+
+    pub fn create_buffer_with_data(&self, data: *const std::ffi::c_void, size: u64) -> metal::Buffer {
+        let buffer = self.device.new_buffer_with_data(
+            data,
+            size,
+            MTLResourceOptions::CPUCacheModeDefaultCache | MTLResourceOptions::StorageModeManaged,
+        );
+
+        buffer
+    }
+
+    pub fn display_size(&self) -> [u32; 2] {
+        self.display_size
+    }
+
+    pub fn swapchain(&self) -> &SwapChain {
+        &self.swapchain
+    }
+
+    pub fn new_command_buffer(&self) -> &metal::CommandBufferRef {
+        self.queue.new_command_buffer()
+    }
 }
 
 pub struct PipelineBuilder
 {
     shader_lib: String,
     vertex_shader: String,
-    fragment_shader: String
+    fragment_shader: String,
+    attachments: Vec<MTLPixelFormat>
 }
 
 impl PipelineBuilder
@@ -66,6 +112,7 @@ impl PipelineBuilder
             shader_lib: "".to_string(),
             vertex_shader: "".to_string(),
             fragment_shader: "".to_string(),
+            attachments: Vec::new()
         }
     }
 
@@ -84,6 +131,11 @@ impl PipelineBuilder
         self
     }
 
+    pub fn with_attachment(mut self, fmt: metal::MTLPixelFormat) -> Self {
+        self.attachments.push(fmt);
+        self
+    }
+
     pub fn build(&self, device: &Device) -> RenderPipelineDescriptor {
 
         let options = metal::CompileOptions::new();
@@ -96,6 +148,15 @@ impl PipelineBuilder
         let pipeline_state_descriptor = RenderPipelineDescriptor::new();
         pipeline_state_descriptor.set_vertex_function(Some(&vertex_shader));
         pipeline_state_descriptor.set_fragment_function(Some(&pixel_shader));
+
+        for i in 0..self.attachments.len() {
+            let attachment = pipeline_state_descriptor
+            .color_attachments()
+            .object_at(i as u64)
+            .unwrap();
+
+            attachment.set_pixel_format(self.attachments[i]);
+        }
 
         pipeline_state_descriptor
     }
