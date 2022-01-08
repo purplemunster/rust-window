@@ -17,12 +17,8 @@ impl SwapChain
         self.raw.set_drawable_size(CGSize::new(size[0] as f64, size[1] as f64));
     }
 
-    pub fn next_drawable(&self) -> &metal::TextureRef {
-        self.raw.next_drawable().expect("Failed to acquire drawable").texture()
-    }
-
-    pub fn present(&self, cmd_buffer: &metal::CommandBufferRef) {
-        cmd_buffer.present_drawable(self.raw.next_drawable().expect("Failed to acquire drawable"))
+    pub fn next_drawable(&self) -> Option<&MetalDrawableRef> {
+        self.raw.next_drawable()
     }
 }
 
@@ -95,10 +91,64 @@ impl RenderContext
     pub fn new_command_buffer(&self) -> &metal::CommandBufferRef {
         self.queue.new_command_buffer()
     }
+
+    pub fn new_ray_intersector(&self,
+        ray_stride: u64, ray_data_type: MPSRayDataType,
+        intersection_stride: u64, intersection_data_type: MPSIntersectionDataType) -> RayIntersector
+    {
+        let ray_intersector = RayIntersector::from_device(&self.device).expect("Failed to create ray intersector");
+
+        ray_intersector.set_ray_stride(ray_stride);
+        ray_intersector.set_ray_data_type(ray_data_type);
+        ray_intersector.set_intersection_stride(intersection_stride);
+        ray_intersector.set_intersection_data_type(intersection_data_type);
+
+        ray_intersector
+    }
+
+    pub fn new_triangle_acceleration_structure(&self,
+        vertex_buffer: &metal::BufferRef,
+        vertex_stride: u32,
+        index_buffer: Option<&metal::BufferRef>,
+        triangle_count: u32) -> TriangleAccelerationStructure
+    {
+        let acceleration_structure = TriangleAccelerationStructure::from_device(&self.device).expect("Failed to create triangle acceleration structure");
+
+        acceleration_structure.set_vertex_buffer(Some(&vertex_buffer));
+        acceleration_structure.set_vertex_stride(vertex_stride as u64);
+        acceleration_structure.set_index_buffer(index_buffer);
+        acceleration_structure.set_index_type(MPSDataType::UInt32);
+        acceleration_structure.set_triangle_count(triangle_count as u64);
+        acceleration_structure.set_usage(MPSAccelerationStructureUsage::None);
+        acceleration_structure.rebuild();
+
+        acceleration_structure
+    }
+
+    pub fn create_depth_texture(&self, dims: [u64; 2]) -> metal::Texture {
+        let desc = metal::TextureDescriptor::new();
+        desc.set_texture_type(metal::MTLTextureType::D2);
+        desc.set_pixel_format(metal::MTLPixelFormat::Depth32Float);
+        desc.set_width(dims[0]);
+        desc.set_height(dims[1]);
+        desc.set_usage(metal::MTLTextureUsage::RenderTarget);
+        desc.set_storage_mode(metal::MTLStorageMode::Private);
+
+        self.device.new_texture(&desc)
+    }
+
+    pub fn create_depth_stencil_state(&self) -> metal::DepthStencilState {
+        let desc = metal::DepthStencilDescriptor::new();
+        desc.set_depth_compare_function(metal::MTLCompareFunction::LessEqual);
+        desc.set_depth_write_enabled(true);
+        desc.set_label("DepthStencil State");
+
+        self.device.new_depth_stencil_state(&desc)
+    }
 }
 
 pub struct PipelineBuilder
-{
+{   
     shader_lib: String,
     vertex_shader: String,
     fragment_shader: String,
@@ -138,10 +188,11 @@ impl PipelineBuilder
 
     pub fn build(&self, device: &Device) -> RenderPipelineDescriptor {
 
-        let options = metal::CompileOptions::new();
-        let shader_source = std::fs::read_to_string(self.shader_lib.clone()).expect("Failed to read shader file");
+        let library_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(self.shader_lib.clone());
 
-        let shader_lib = device.new_library_with_source(&shader_source, &options).expect("Failed to compile shader source");
+        println!("{}", library_path.to_str().unwrap());
+        let shader_lib = device.new_library_with_file(library_path).expect("Failed to compile shader source");
         let vertex_shader = shader_lib.get_function(&self.vertex_shader, None).expect("Failed to create vertex shader");
         let pixel_shader = shader_lib.get_function(&self.fragment_shader, None).expect("Failed to create pixel shader");
 

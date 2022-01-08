@@ -5,14 +5,14 @@ use winit::window::WindowBuilder;
 use winit::platform::run_return::EventLoopExtRunReturn;
 
 use dolly::prelude::*;
-use directx_math::*;
-use glam::*;
+use glam::{ f32::Vec3 };
 
 #[cfg(target_os = "macos")]
 use objc::rc::autoreleasepool;
 
 #[cfg(target_os = "macos")]
 pub mod mtl;
+#[cfg(target_os = "macos")]
 pub use mtl::*;
 
 pub struct WindowWrapper
@@ -22,10 +22,33 @@ pub struct WindowWrapper
     renderer: RenderContext
 }
 
-struct Vertex
-{
-    position : [f32; 3],
-    color : [f32; 4]
+struct MeshPrimitive {
+    pub vertex_offset : u64,
+    pub index_offset : u64,
+    pub index_count : u64
+}
+
+struct AABB {
+    min: [f32;3], max: [f32; 3]
+}
+
+impl AABB {
+    fn union(&mut self, point: &[f32;3]) {
+
+        self.min[0] = self.min[0].min(point[0]);
+        self.min[1] = self.min[1].min(point[1]);
+        self.min[2] = self.min[2].min(point[2]);
+
+        self.max[0] = self.max[0].max(point[0]);
+        self.max[1] = self.max[1].max(point[1]);
+        self.max[2] = self.max[2].max(point[2]);
+    }
+
+    fn center(&self) -> [f32; 3] {
+        [(self.max[0] - self.min[0]) * 0.5,
+         (self.max[1] - self.min[1]) * 0.5,
+         (self.max[2] - self.min[2]) * 0.5]
+    }
 }
 
 impl WindowWrapper
@@ -64,42 +87,112 @@ impl WindowWrapper
 
         // default library
         let raster_pipeline = PipelineBuilder::new()
-            .from_shader_lib("src/shaders.metal")
+            .from_shader_lib("src/shaders.metallib")
             .with_vertex_function("triangle_vertex")
             .with_fragment_function("triangle_fragment")
             .with_attachment(metal::MTLPixelFormat::BGRA8Unorm);
 
         let pso = renderer.create_raster_pipeline(&raster_pipeline);
 
-        let triangle_vertices = [
-            // 2D positions,    RGBA colors
-            Vertex { position: [ 0.0, 0.5, -2.0], color: [1.0, 0.0, 0.0, 1.0] },
-            Vertex { position: [ 0.5,-0.5, -2.0], color: [0.0, 1.0, 0.0, 1.0] },
-            Vertex { position: [-0.5,-0.5, -2.0], color: [0.0, 0.0, 1.0, 1.0] }
-        ];
+        let (document, buffers, _images) = gltf::import("../kajiya/assets/meshes/336_lrm/scene.gltf").expect("Failed to load gltf!");
+        let _scene = document.default_scene().unwrap();
 
-        let stride = std::mem::size_of::<Vertex>();
+        let mut triangle_vertices : Vec<[f32; 3]> = Vec::new();
+        let mut triangle_normals : Vec<[f32; 3]> = Vec::new();
+        let mut triangle_indices : Vec<u32> = Vec::new();
 
+        let vertex_stride = std::mem::size_of::<[f32;3]>();
+        let index_stride = std::mem::size_of::<u32>();
+
+        let mut mesh_primitives : Vec<MeshPrimitive> = Vec::new();
+
+        let mut bounds = AABB { 
+            min: [std::f32::MAX, std::f32::MAX, std::f32::MAX],
+            max: [-std::f32::MAX, -std::f32::MAX, -std::f32::MAX]
+        };
+
+        // Walk the mesh list and gather primitive vertex attributes and indices
+        for mesh in document.meshes() {
+            for primitive in mesh.primitives() {
+
+                // find associated buffer
+                let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+
+                // read indices
+                let indices = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
+                
+                mesh_primitives.push(MeshPrimitive {
+                    vertex_offset: (triangle_vertices.len() * vertex_stride) as u64,
+                    index_offset: (triangle_indices.len() * index_stride)  as u64,
+                    index_count: indices.len() as u64
+                });
+
+                // append to index buffer
+                triangle_indices.extend_from_slice(&indices);
+
+                // and vertices
+                let vertices = reader.read_positions().unwrap().collect::<Vec<_>>();
+                triangle_vertices.extend_from_slice(&vertices);
+
+                for vertex in vertices.iter() {
+                    bounds.union(vertex);
+                }
+
+                // and normals
+                let normals = reader.read_normals().unwrap().collect::<Vec<_>>();
+                triangle_normals.extend_from_slice(&normals);
+            }
+        }
+
+        // Create mesh buffers
         let vertex_buffer = {
             renderer.create_buffer_with_data(
                 triangle_vertices.as_ptr() as *const _,
-                (triangle_vertices.len() * stride) as u64
+                (triangle_vertices.len() * std::mem::size_of::<[f32;3]>()) as u64
+            )
+        };
+        let normal_buffer = {
+            renderer.create_buffer_with_data(
+                triangle_normals.as_ptr() as *const _,
+                (triangle_normals.len() * std::mem::size_of::<[f32;3]>()) as u64
+            )
+        };
+        let index_buffer = {
+            renderer.create_buffer_with_data(
+                triangle_indices.as_ptr() as *const _,
+                (triangle_indices.len() * std::mem::size_of::<u32>()) as u64
             )
         };
 
+        /*
+        let acceleration_structure = renderer.new_triangle_acceleration_structure(&vertex_buffer, std::mem::size_of::<[f32;3]>() as u32, None, 1u32);
+        let ray_intersector = renderer.new_ray_intersector(
+            std::mem::size_of::<metal::MPSRayOriginMinDistanceDirectionMaxDistance>() as u64,
+            metal::MPSRayDataType::OriginMinDistanceDirectionMaxDistance,
+            std::mem::size_of::<metal::MPSIntersectionDistancePrimitiveIndexCoordinates>() as u64,
+            metal::MPSIntersectionDataType::DistancePrimitiveIndexCoordinates
+        );
+        */
+
+        let bounds_center = bounds.center();
+        let pos = bounds.max; //bounds.center();
+
         let mut camera = CameraRig::builder()
-            .with(Position::new(Vec3::new(0.0, 0.0, 0.0)))
+            .with(Position::new(Vec3::new(pos[0], pos[1], pos[2])))
             .with(YawPitch::new())
             .with(Smooth::new_position_rotation(1.0, 1.0))
             .build();
 
         let display_size = renderer.display_size();
 
-        let fov_y = XMConvertToRadians(65.0);
-        let aspect_ratio = display_size[0] as f32 / display_size[0] as f32;
+        // create depth texture
+        let depth_buffer = renderer.create_depth_texture([display_size[0] as u64, display_size[1] as u64]);
+        let ds_state = renderer.create_depth_stencil_state();
+
+        let aspect_ratio = display_size[0] as f32 / display_size[1] as f32;
         let z_near = 0.1;
         let z_far = 1000.0;
-        let perspective_matrix = XMMatrixPerspectiveFovRH(fov_y, aspect_ratio, z_near, z_far);
+        let perspective_matrix = glam::f32::Mat4::perspective_rh(65.0_f32.to_radians(), aspect_ratio, z_near, z_far);
 
         let mut move_direction = Vec3::new(0.0, 0.0, 0.0);
         // Moving closure, takes ownership of all variables that it uses.
@@ -174,23 +267,31 @@ impl WindowWrapper
                         camera.update(time_delta_seconds);
 
                         let camera_xform = camera.final_transform;
-                        let target = camera_xform.position + camera_xform.forward();
-                        let eye = XMVectorSet(camera_xform.position.x, camera_xform.position.y, camera_xform.position.z, 1.0);
-                        let focus = XMVectorSet(target.x, target.y, target.z, 1.0);
-                        let up = XMVectorSet(camera_xform.up().x, camera_xform.up().y, camera_xform.up().z, 1.0);
+                        let target = Vec3::new(bounds_center[0], bounds_center[1], bounds_center[2]);
 
-                        let view_matrix = XMMatrixLookAtRH(eye, focus, up);
+                        //camera_xform.position + camera_xform.forward();
+                        let view_matrix = glam::f32::Mat4::look_at_rh(camera_xform.position, target, camera_xform.up());
 
-                        let mvp_array : [f32; 16] = XMMatrix(XMMatrixTranspose(XMMatrixMultiply(view_matrix, &perspective_matrix))).into();
+                        let mut mvp_array : [f32; 16] = [0.0; 16];
+                        (perspective_matrix * view_matrix).transpose().write_cols_to_slice(&mut mvp_array);
 
                         let render_pass_descriptor = metal::RenderPassDescriptor::new();
                         let color_attachment = render_pass_descriptor.color_attachments().object_at(0).unwrap();
 
-                        let drawable = renderer.swapchain().next_drawable();
-                        color_attachment.set_texture(Some(drawable));
+                        let drawable = match renderer.swapchain().next_drawable() {
+                            Some(drawable) => drawable,
+                            None => return
+                        };
+
+                        color_attachment.set_texture(Some(drawable.texture()));
                         color_attachment.set_load_action(metal::MTLLoadAction::Clear);
                         color_attachment.set_clear_color(metal::MTLClearColor::new(0.2, 0.25, 0.3, 1.0));
                         color_attachment.set_store_action(metal::MTLStoreAction::Store);
+
+                        let depth_attachment = render_pass_descriptor.depth_attachment().unwrap();
+                        depth_attachment.set_texture(Some(&depth_buffer));
+                        depth_attachment.set_clear_depth(1.0);
+                        depth_attachment.set_store_action(metal::MTLStoreAction::DontCare);
 
                         let cmd_buffer = renderer.new_command_buffer();
                         let encoder = cmd_buffer.new_render_command_encoder(&render_pass_descriptor);
@@ -204,12 +305,26 @@ impl WindowWrapper
                         });
 
                         encoder.set_render_pipeline_state(&pso);
-                        encoder.set_vertex_buffer(1, Some(&vertex_buffer), 0);
                         encoder.set_vertex_bytes(0, 64, mvp_array.as_ptr() as *const std::ffi::c_void);
-                        encoder.draw_primitives(metal::MTLPrimitiveType::Triangle, 0, 3);
+                        encoder.set_cull_mode(metal::MTLCullMode::Back);
+                        encoder.set_front_facing_winding(metal::MTLWinding::Clockwise);
+                        encoder.set_depth_stencil_state(&ds_state);
+
+                        for prim in mesh_primitives.iter() {
+
+                            encoder.set_vertex_buffer(1, Some(&vertex_buffer), prim.vertex_offset);
+                            encoder.set_vertex_buffer(2, Some(&normal_buffer), prim.vertex_offset);
+                            encoder.draw_indexed_primitives(
+                                metal::MTLPrimitiveType::Triangle,
+                                prim.index_count,
+                                metal::MTLIndexType::UInt32,
+                                &index_buffer,
+                                prim.index_offset);
+                        }
+
                         encoder.end_encoding();
 
-                        renderer.swapchain().present(cmd_buffer);
+                        cmd_buffer.present_drawable(drawable);
                         cmd_buffer.commit();
 
                         // reset state

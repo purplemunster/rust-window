@@ -1,4 +1,5 @@
 #include <metal_stdlib>
+#include <MetalPerformanceShaders/MetalPerformanceShaders.h>
 
 using namespace metal;
 
@@ -8,18 +9,12 @@ struct RasterizerData
     // is the clip space position of the vertex when this structure is
     // returned from the vertex function.
     float4 position [[position]];
-
-    // Since this member does not have a special attribute, the rasterizer
-    // interpolates its value with the values of the other triangle vertices
-    // and then passes the interpolated value to the fragment shader for each
-    // fragment in the triangle.
-    float4 color;
+    float3 normal;
 };
 
 struct Vertex
 {
 	packed_float3 position;
-	packed_float4 color;
 };
 
 struct VertexUniforms
@@ -28,18 +23,40 @@ struct VertexUniforms
 };
 
 vertex RasterizerData triangle_vertex(
-    uint vid [[vertex_id]], constant VertexUniforms& uniforms [[buffer(0)]], const device Vertex* vertices [[buffer(1)]])
+    uint vid [[vertex_id]],
+    constant VertexUniforms& uniforms [[buffer(0)]],
+    const device packed_float3* vertices [[buffer(1)]],
+    const device packed_float3* normals [[buffer(2)]])
 {
     RasterizerData outData;
-    auto device const &v = vertices[vid];
-    outData.position = float4(v.position.x, v.position.y, v.position.z, 1.0) * uniforms.mvp_matrix;
-    outData.color = v.color;
+    auto device const &position = vertices[vid];
+    outData.position = float4(position.x, position.y, position.z, 1.0) * uniforms.mvp_matrix;
+    auto device const &normal = normals[vid];
+    outData.normal = (float4(normal.x, normal.y, normal.z, 1.0) * uniforms.mvp_matrix).xyz;
 
     return outData;
 }
 
 // fragment shader function
-fragment float4 triangle_fragment(RasterizerData in [[stage_in]])
+fragment float4 triangle_fragment(RasterizerData in [[stage_in]], float3 bary [[barycentric_coord]])
 {
-    return in.color;
+    return float4(bary.x, bary.y, bary.z, 1.0);
 };
+
+
+using Ray = MPSRayOriginMinDistanceDirectionMaxDistance;
+using Intersection = MPSIntersectionDistancePrimitiveIndexCoordinates;
+
+kernel void generateRays(
+    device Ray* rays [[buffer(0)]],
+    uint2 coordinates [[thread_position_in_grid]],
+    uint2 size [[threads_per_grid]])
+{
+    float2 uv = float2(coordinates) / float2(size - 1);
+
+    uint rayIndex = coordinates.x + coordinates.y * size.x;
+    rays[rayIndex].origin = MPSPackedFloat3(uv.x, uv.y, -1.0);
+    rays[rayIndex].direction = MPSPackedFloat3(0.0, 0.0, 1.0);
+    rays[rayIndex].minDistance = 0.0f;
+    rays[rayIndex].maxDistance = 2.0f;
+}
